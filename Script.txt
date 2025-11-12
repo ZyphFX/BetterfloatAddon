@@ -1,0 +1,180 @@
+(() => {
+  const TAG_SELECTOR = 'span.betterfloat-sale-tag';
+  const DEBOUNCE_MS = 150;
+  const HOVER_PAUSE_MS = 800; // how long to freeze updates after hover/click
+  let panel, observer, updateTimer;
+  let sortMode = 'percent';
+  let hoverPaused = false;
+  let lastHoverTime = 0;
+
+  function createPanel() {
+    panel = document.createElement('div');
+    panel.id = 'dealFinderPanel';
+    panel.style.cssText = `
+      position:fixed; top:20px; right:20px; z-index:999999;
+      backdrop-filter: blur(16px) saturate(180%);
+      -webkit-backdrop-filter: blur(16px) saturate(180%);
+      background-color: rgba(28,28,40,0.65);
+      border-radius:16px; border:1px solid rgba(255,255,255,0.15);
+      box-shadow:0 4px 30px rgba(0,0,0,0.2);
+      color:#fff; font-family:"Segoe UI",sans-serif;
+      width:260px; max-height:420px; overflow-y:auto;
+      padding:16px 16px 24px; cursor:grab;
+    `;
+
+    panel.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+        <h4 style="margin:0;font-size:15px;">Deal Finder (Live)</h4>
+        <div id="closeBtn" style="cursor:pointer;font-size:14px;opacity:0.8;">✖</div>
+      </div>
+      <button id="sortToggle" style="
+        width:100%; border:none; border-radius:10px;
+        background:rgba(255,255,255,0.12);
+        color:white; padding:8px 0; cursor:pointer; font-size:12px;
+        transition:transform 150ms ease, background 200ms ease, box-shadow 200ms ease;
+        box-shadow:0 2px 8px rgba(0,0,0,0.25);
+      ">Sort by: %</button>
+      <div id="dealFinderContent" style="margin-top:10px;font-size:13px;">Loading deals...</div>
+      <div id="dealFinderStatus" style="font-size:10px;color:#aaa;text-align:center;margin-top:10px;"></div>
+    `;
+    document.body.appendChild(panel);
+
+    // Dragging
+    let drag = { active: false, offsetX: 0, offsetY: 0 };
+    panel.addEventListener('mousedown', e => {
+      if (e.target.closest('button, #dealFinderContent')) return;
+      drag.active = true;
+      panel.style.cursor = 'grabbing';
+      drag.offsetX = e.clientX - panel.offsetLeft;
+      drag.offsetY = e.clientY - panel.offsetTop;
+    });
+    document.addEventListener('mouseup', () => { drag.active = false; panel.style.cursor = 'grab'; });
+    document.addEventListener('mousemove', e => {
+      if (!drag.active) return;
+      panel.style.left = `${e.clientX - drag.offsetX}px`;
+      panel.style.top = `${e.clientY - drag.offsetY}px`;
+      panel.style.right = 'auto';
+    });
+
+    document.getElementById('closeBtn').onclick = () => {
+      panel.remove();
+      observer?.disconnect();
+    };
+
+    const sortBtn = document.getElementById('sortToggle');
+    sortBtn.onclick = () => {
+      sortMode = sortMode === 'percent' ? 'price' : 'percent';
+      sortBtn.textContent = `Sort by: ${sortMode === 'percent' ? '%' : '$'}`;
+      sortBtn.style.transform = 'scale(1.06)';
+      sortBtn.style.background = sortMode === 'percent'
+        ? 'linear-gradient(90deg, rgba(255,255,255,0.12), rgba(255,255,255,0.08))'
+        : 'linear-gradient(90deg, rgba(255,255,255,0.18), rgba(255,255,255,0.12))';
+      setTimeout(() => (sortBtn.style.transform = 'scale(1)'), 160);
+      updateDeals();
+    };
+  }
+
+  function getDeals() {
+    const tags = Array.from(document.querySelectorAll(TAG_SELECTOR));
+    const deals = [];
+
+    for (const el of tags) {
+      const val = parseFloat(el.dataset.betterfloat);
+      if (isNaN(val) || val >= 0) continue;
+      const discountText = el.querySelector('span')?.textContent?.trim() ?? '';
+      const percentText = el.querySelector('.betterfloat-sale-tag-percentage')?.textContent?.trim() ?? '';
+      const percentValue = parseFloat(percentText.replace(/[^\d.-]/g, '')) || 999;
+      if (percentValue > 99.99) continue;
+      deals.push({ el, discount: val, discountText, percentText, percentValue });
+    }
+
+    return sortMode === 'percent'
+      ? deals.sort((a, b) => b.percentValue - a.percentValue)
+      : deals.sort((a, b) => a.discount - b.discount);
+  }
+
+  function updateDeals() {
+    if (hoverPaused && Date.now() - lastHoverTime < HOVER_PAUSE_MS) return;
+    const content = document.getElementById('dealFinderContent');
+    const status = document.getElementById('dealFinderStatus');
+    if (!content) return;
+
+    const deals = getDeals();
+    if (deals.length === 0) {
+      content.innerHTML = `<div style="color:#ccc;">No green deals found.</div>`;
+      status.textContent = `Last update: ${new Date().toLocaleTimeString()}`;
+      return;
+    }
+
+    const best = deals[0];
+    let html = `
+      <div>Found: <b>${deals.length}</b> green deals</div>
+      <div>Best: <b>${best.discountText}</b> ${best.percentText}</div>
+      <hr style="border:none;border-top:1px solid rgba(255,255,255,0.2);margin:6px 0;">
+    `;
+
+    Object.keys(window).forEach(k => {
+      if (k.startsWith('scrollToDeal_')) delete window[k];
+    });
+
+    deals.forEach((d, i) => {
+      html += `
+        <div class="dealItem" style="
+          cursor:pointer; padding:6px 4px;
+          border-bottom:1px solid rgba(255,255,255,0.06);
+          font-size:12px; transition:transform 120ms ease, color 120ms ease;
+        " data-index="${i}">
+          ${i + 1}. ${d.discountText} ${d.percentText}
+        </div>`;
+      window[`scrollToDeal_${i}`] = () => {
+        d.el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        d.el.style.outline = '2px solid #00ffb3';
+        setTimeout(() => (d.el.style.outline = ''), 1800);
+      };
+    });
+
+    content.innerHTML = html;
+    status.textContent = `Last update: ${new Date().toLocaleTimeString()}`;
+
+    // Pause updates when hovering any deal
+    document.querySelectorAll('.dealItem').forEach((el, i) => {
+      el.addEventListener('mouseenter', () => {
+        hoverPaused = true;
+        lastHoverTime = Date.now();
+        el.style.color = '#80ffb3';
+        el.style.transform = 'translateX(4px)';
+      });
+      el.addEventListener('mouseleave', () => {
+        el.style.color = '#fff';
+        el.style.transform = 'none';
+        lastHoverTime = Date.now();
+        setTimeout(() => (hoverPaused = false), HOVER_PAUSE_MS);
+      });
+      el.addEventListener('click', () => {
+        lastHoverTime = Date.now();
+        hoverPaused = true;
+        window[`scrollToDeal_${i}`]();
+        setTimeout(() => (hoverPaused = false), HOVER_PAUSE_MS);
+      });
+    });
+  }
+
+  function startObserver() {
+    if (observer) observer.disconnect();
+    observer = new MutationObserver(() => {
+      if (updateTimer) clearTimeout(updateTimer);
+      updateTimer = setTimeout(updateDeals, DEBOUNCE_MS);
+    });
+    observer.observe(document.body, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ['data-betterfloat', 'style']
+    });
+  }
+
+  document.getElementById('dealFinderPanel')?.remove();
+  createPanel();
+  updateDeals();
+  startObserver();
+})();
